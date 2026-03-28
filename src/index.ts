@@ -19,6 +19,7 @@ import {
   GitHubFileParams,
   REPOS,
   OWNER,
+  DynamicExecutorParams,
 } from './types.js';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -185,6 +186,30 @@ class GitHubRegistryMCP extends Server {
             required: ['type'],
           },
         },
+        {
+          name: 'dynamic_executor',
+          description: 'Search and retrieve complete skill/agent/mcp content from the registry on-demand. Use this when you need to execute a skill, agent, or MCP that is not available locally. It searches the remote registry and returns the full content including SKILL.md and optionally references, scripts, and agents.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              task: { 
+                type: 'string', 
+                description: 'Description of what you need to do (e.g., "code review", "create API", "security testing")' 
+              },
+              type: { 
+                type: 'string', 
+                enum: ['skill', 'agent', 'mcp', 'all'],
+                description: 'Type of resource to search. If not specified, searches all available registries'
+              },
+              includeResources: { 
+                type: 'boolean', 
+                description: 'Also fetch references/, scripts/, and other resources if available',
+                default: false
+              }
+            },
+            required: ['task']
+          },
+        },
       ],
     }));
 
@@ -216,6 +241,9 @@ class GitHubRegistryMCP extends Server {
           
           case 'registry_get_index':
             return await this.registryGetIndex(args as unknown as { type: RegistryType });
+          
+          case 'dynamic_executor':
+            return await this.dynamicExecutor(args as unknown as DynamicExecutorParams);
           
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -528,6 +556,140 @@ class GitHubRegistryMCP extends Server {
       }
       throw error;
     }
+  }
+
+  private async dynamicExecutor(args: DynamicExecutorParams): Promise<any> {
+    const { task, type = 'all', includeResources = false } = args;
+    
+    const typesToSearch = type === 'all' 
+      ? (['skill', 'agent', 'mcp'] as const)
+      : [type];
+    
+    const results = [];
+    
+    for (const t of typesToSearch) {
+      const registryType = t === 'skill' ? 'skills' : t === 'agent' ? 'agents' : 'mcp';
+      const repoKey = registryType as RegistryType;
+      
+      try {
+        const searchResults = await this.registrySearch({ type: registryType, query: task });
+        const parsed = JSON.parse(searchResults.content[0].text);
+        
+        if (parsed.length > 0) {
+          const bestMatch = parsed[0];
+          
+          const mainContent = await this.githubReadFile({
+            owner: OWNER,
+            repo: REPOS[repoKey],
+            path: bestMatch.path
+          });
+          
+          const matchReason = this.buildMatchReason(bestMatch, task);
+          
+          const result: any = {
+            type: t,
+            name: bestMatch.name,
+            path: bestMatch.path,
+            description: bestMatch.description,
+            tags: bestMatch.tags || [],
+            content: mainContent.content[0].text,
+            matchReason
+          };
+          
+          if (includeResources) {
+            const resources = await this.fetchSkillResources(registryType, bestMatch.path);
+            if (resources) result.resources = resources;
+          }
+          
+          results.push(result);
+        }
+      } catch (error: any) {
+        if (error.status !== 404) {
+          console.error(`Error searching ${t}:`, error.message);
+        }
+      }
+    }
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          found: results.length > 0,
+          results,
+          searchedTypes: [...typesToSearch],
+          message: results.length > 0 
+            ? `Found ${results.length} result(s)`
+            : 'No matching skill/agent/mcp found in registry'
+        }, null, 2)
+      }]
+    };
+  }
+
+  private buildMatchReason(item: any, task: string): string {
+    const taskLower = task.toLowerCase();
+    const reasons: string[] = [];
+    
+    if (item.name.toLowerCase().includes(taskLower) || taskLower.includes(item.name.toLowerCase())) {
+      reasons.push(`name matches "${item.name}"`);
+    }
+    
+    if (item.tags && item.tags.some((tag: string) => taskLower.includes(tag.toLowerCase()))) {
+      const matchedTags = item.tags.filter((tag: string) => taskLower.includes(tag.toLowerCase()));
+      reasons.push(`tags: ${matchedTags.join(', ')}`);
+    }
+    
+    if (item.description && item.description.toLowerCase().includes(taskLower.split(' ')[0])) {
+      reasons.push('description keyword match');
+    }
+    
+    return reasons.length > 0 ? reasons.join('; ') : 'best match from search results';
+  }
+
+  private async fetchSkillResources(registryType: string, itemPath: string): Promise<any | null> {
+    const basePath = itemPath.replace(/\.md$/, '');
+    
+    const resources: any = {
+      references: [],
+      scripts: [],
+      agents: []
+    };
+    
+    const subdirs = ['references', 'scripts', 'agents'];
+    const repoKey = registryType as RegistryType;
+    
+    for (const subdir of subdirs) {
+      try {
+        const dirContent = await this.githubListDirectory({
+          owner: OWNER,
+          repo: REPOS[repoKey],
+          path: `${basePath}/${subdir}`
+        });
+        
+        const files = JSON.parse(dirContent.content[0].text);
+        
+        for (const file of files) {
+          if (file.type === 'file') {
+            const fileContent = await this.githubReadFile({
+              owner: OWNER,
+              repo: REPOS[repoKey],
+              path: file.path
+            });
+            
+            const resourceKey = subdir as 'references' | 'scripts' | 'agents';
+            resources[resourceKey].push({
+              name: file.name,
+              content: fileContent.content[0].text
+            });
+          }
+        }
+      } catch (error: any) {
+        // Directory doesn't exist, that's fine
+      }
+    }
+    
+    return resources.references.length > 0 || resources.scripts.length > 0 || resources.agents.length > 0
+      ? resources
+      : null;
   }
 }
 

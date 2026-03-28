@@ -53,3 +53,31 @@ export const REPOS: Record<RegistryType, string> = {
 };
 
 export const OWNER = 'Hashzin-0';
+
+export interface DynamicExecutorParams {
+  task: string;
+  type?: 'skill' | 'agent' | 'mcp' | 'all';
+  includeResources?: boolean;
+}
+
+export interface DynamicExecutorResultItem {
+  type: 'skill' | 'agent' | 'mcp';
+  name: string;
+  path: string;
+  description: string;
+  tags: string[];
+  content: string;
+  resources?: {
+    references: { name: string; content: string }[];
+    scripts: { name: string; content: string }[];
+    agents: { name: string; content: string }[];
+  };
+  matchReason: string;
+}
+
+export interface DynamicExecutorResult {
+  found: boolean;
+  results: DynamicExecutorResultItem[];
+  searchedTypes: string[];
+  message: string;
+}
