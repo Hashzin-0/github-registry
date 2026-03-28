@@ -1,9 +1,16 @@
 {
-  "name": "@hashzin-0/github-registry-mcp",
+  "name": "ghr",
   "version": "1.0.0",
   "description": "MCP Server for GitHub Registry - Manage skills, agents and MCPs in GitHub repos",
   "main": "dist/index.js",
+  "bin": {
+    "ghr": "./bin/cli.js"
+  },
   "type": "module",
+  "files": [
+    "bin/",
+    "dist/"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js --http",

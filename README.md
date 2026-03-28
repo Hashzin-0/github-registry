@@ -179,6 +179,18 @@ MCPs/
 }
 ```
 
+## Instalação Rápida
+
+Para configurar o GitHub Registry MCP no seu OpenCode, basta rodar:
+
+```bash
+npx ghr
+```
+
+Este comando configura automaticamente o MCP no seu OpenCode apontando para o servidor remoto.
+
+Após a instalação, reinicie o OpenCode para usar as ferramentas do MCP.
+
 ## Desenvolvimento
 
 ```bash

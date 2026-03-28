@@ -559,8 +559,22 @@ async function startServer() {
       }
     });
 
+    const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+    
     app.get('/health', (req, res) => {
-      res.json({ status: 'ok' });
+      const health: { status: string; timestamp: string; services: { github: string } } = {
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        services: {
+          github: GITHUB_TOKEN ? 'configured' : 'missing_token',
+        },
+      };
+      
+      if (!GITHUB_TOKEN) {
+        health.status = 'degraded';
+      }
+      
+      res.status(GITHUB_TOKEN ? 200 : 503).json(health);
     });
 
     app.listen(PORT, '0.0.0.0', () => {
