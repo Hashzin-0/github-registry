@@ -5,16 +5,16 @@ MCP Server para gerenciar Skills, Agentes e MCPs em repositórios GitHub.
 ## Funcionalidades
 
 ### Operações GitHub Básicas
-- `github_read_file` - Ler arquivo de qualquer repositório
-- `github_write_file` - Criar/editar arquivo em qualquer repositório
-- `github_list_directory` - Listar conteúdo de diretório
+- `read_file` - Ler arquivo de qualquer repositório
+- `write_file` - Criar/editar arquivo em qualquer repositório
+- `list_directory` - Listar conteúdo de diretório
 
 ### Operações de Registry
-- `registry_init` - Inicializar estrutura do repositório (index.json + diretórios)
-- `registry_save` - Salvar item e atualizar index.json automaticamente
-- `registry_search` - Buscar por nome ou tags no índice
-- `registry_list` - Listar todos os itens com agrupamento opcional
-- `registry_get_index` - Obter o index.json cru
+- `init` - Inicializar estrutura do repositório (index.json + diretórios)
+- `save` - Salvar item e atualizar index.json automaticamente
+- `search` - Buscar por nome ou tags no índice
+- `list` - Listar todos os itens com agrupamento opcional
+- `get_index` - Obter o index.json cru
 
 ## Modos de Uso
 
@@ -81,6 +81,7 @@ Após fazer o deploy, use a URL HTTP:
 1. Conecte este repo ao Render
 2. Configure as variáveis de ambiente:
    - `GITHUB_TOKEN` = seu token
+   - `GITHUB_WEBHOOK_SECRET` = (opcional) secret para validar webhook
 3. Comando de build: `npm run build`
 4. Comando de start: `npm run start:http`
 
@@ -89,7 +90,74 @@ Após fazer o deploy, use a URL HTTP:
 1. Conecte este repo ao Railway
 2. Configure as variáveis de ambiente:
    - `GITHUB_TOKEN` = seu token
+   - `GITHUB_WEBHOOK_SECRET` = (opcional) secret para validar webhook
 3. O Railway automaticamente detecta Node.js e faz o build
+
+## Webhook para Auto-Update do Index
+
+O servidor suporta webhooks para atualizar automaticamente o `index.json` quando arquivos `.md` são adicionados, modificados ou removidos nos repositórios (Skills, Agentes, MCPs).
+
+### Configuração
+
+1. **Deploy o servidor** (Render/Railley) e obtenha a URL (ex: `https://seu-servico.onrender.com`)
+
+2. **Configure o webhook** em cada repositório (Skills, Agentes, MCPs):
+
+   - Vá em Settings > Webhooks > Add webhook
+   - Payload URL: `https://seu-servico.onrender.com/webhook`
+   - Content type: `application/json`
+   - Events: Selecione "Pushes"
+   - Secret: (opcional) mesmo valor de `GITHUB_WEBHOOK_SECRET`
+
+3. **Variáveis de ambiente** (opcional):
+   - `GITHUB_WEBHOOK_SECRET` - Secret para validar assinatura do webhook
+
+### Como funciona
+
+Quando alguém faz push para o repositório:
+1. O GitHub envia um webhook para `/webhook`
+2. O servidor detecta arquivos `.md` alterados
+3. Para cada arquivo:
+   - **Adicionado/Modificado**: Lê o conteúdo, extrai name, tags e description, atualiza o index
+   - **Removido**: Remove o item do index
+4. Commita as mudanças no `index.json` automaticamente
+
+### Exemplo de index.json gerado
+
+```json
+{
+  "type": "skills",
+  "items": [
+    {
+      "name": "fetch-user-data",
+      "path": "api/fetch-user-data.md",
+      "tags": ["api", "user"],
+      "description": "Fetch user data from API",
+      "createdAt": "2024-01-01T00:00:00Z",
+      "updatedAt": "2024-01-02T00:00:00Z"
+    }
+  ],
+  "version": "1.0.0",
+  "lastUpdated": "2024-01-02T00:00:00Z"
+}
+```
+
+### Tags no arquivo .md
+
+O servidor extrai tags automaticamente. Use um destes formatos:
+
+```markdown
+<!-- Formato 1: JSON array -->
+tags: [api, user, fetch]
+
+<!-- Formato 2: YAML frontmatter -->
+---
+tags:
+  - api
+  - user
+  - fetch
+---
+```
 
 ## Uso das Tools
 
@@ -97,19 +165,19 @@ Após fazer o deploy, use a URL HTTP:
 
 ```javascript
 // Inicializar registry de skills
-await registry_init({ type: 'skills' })
+await init({ type: 'skills' })
 
 // Inicializar registry de agentes
-await registry_init({ type: 'agents' })
+await init({ type: 'agents' })
 
 // Inicializar registry de MCPs
-await registry_init({ type: 'mcp' })
+await init({ type: 'mcp' })
 ```
 
 ### Salvar um Item
 
 ```javascript
-await registry_save({
+await save({
   type: 'skills',
   name: 'fetch-user-data',
   content: '# Fetch User Data\n\nSkill para buscar dados de usuário...',
@@ -123,20 +191,20 @@ await registry_save({
 
 ```javascript
 // Buscar por nome ou tag
-await registry_search({ type: 'skills', query: 'api' })
+await search({ type: 'skills', query: 'api' })
 ```
 
 ### Listar Itens
 
 ```javascript
 // Lista simples
-await registry_list({ type: 'skills' })
+await list({ type: 'skills' })
 
 // Lista agrupada por caminho
-await registry_list({ type: 'skills', groupBy: 'path' })
+await list({ type: 'skills', groupBy: 'path' })
 
 // Lista agrupada por tags
-await registry_list({ type: 'skills', groupBy: 'tags' })
+await list({ type: 'skills', groupBy: 'tags' })
 ```
 
 ## Estrutura dos Repositórios

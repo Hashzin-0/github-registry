@@ -81,3 +81,30 @@ export interface DynamicExecutorResult {
   searchedTypes: string[];
   message: string;
 }
+
+export interface WebhookCommit {
+  id: string;
+  message: string;
+  added: string[];
+  removed: string[];
+  modified: string[];
+}
+
+export interface WebhookPushPayload {
+  ref: string;
+  before: string;
+  after: string;
+  commits: WebhookCommit[];
+  repository: {
+    name: string;
+    full_name: string;
+  };
+}
+
+export type IndexChangeType = 'add' | 'update' | 'remove';
+
+export interface IndexChange {
+  type: IndexChangeType;
+  path: string;
+  content?: string;
+}

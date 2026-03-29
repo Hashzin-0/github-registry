@@ -8,6 +8,7 @@ import {
 import { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import express from 'express';
+import crypto from 'crypto';
 import {
   RegistryType,
   RegistryItem,
@@ -20,6 +21,8 @@ import {
   REPOS,
   OWNER,
   DynamicExecutorParams,
+  WebhookPushPayload,
+  IndexChange,
 } from './types.js';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -56,7 +59,7 @@ class GitHubRegistryMCP extends Server {
     this.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
-          name: 'github_read_file',
+          name: 'read_file',
           description: 'Read a file from a GitHub repository',
           inputSchema: {
             type: 'object',
@@ -69,7 +72,7 @@ class GitHubRegistryMCP extends Server {
           },
         },
         {
-          name: 'github_write_file',
+          name: 'write_file',
           description: 'Create or update a file in a GitHub repository',
           inputSchema: {
             type: 'object',
@@ -84,7 +87,7 @@ class GitHubRegistryMCP extends Server {
           },
         },
         {
-          name: 'github_list_directory',
+          name: 'list_directory',
           description: 'List contents of a directory in a GitHub repository',
           inputSchema: {
             type: 'object',
@@ -97,7 +100,7 @@ class GitHubRegistryMCP extends Server {
           },
         },
         {
-          name: 'registry_init',
+          name: 'init',
           description: 'Initialize a registry repository structure (index.json + directories) if not exists',
           inputSchema: {
             type: 'object',
@@ -112,7 +115,7 @@ class GitHubRegistryMCP extends Server {
           },
         },
         {
-          name: 'registry_save',
+          name: 'save',
           description: 'Save an item to the registry and automatically update index.json',
           inputSchema: {
             type: 'object',
@@ -136,7 +139,7 @@ class GitHubRegistryMCP extends Server {
           },
         },
         {
-          name: 'registry_search',
+          name: 'search',
           description: 'Search for items in the registry by name or tags',
           inputSchema: {
             type: 'object',
@@ -152,7 +155,7 @@ class GitHubRegistryMCP extends Server {
           },
         },
         {
-          name: 'registry_list',
+          name: 'list',
           description: 'List all items in the registry with optional grouping',
           inputSchema: {
             type: 'object',
@@ -172,7 +175,7 @@ class GitHubRegistryMCP extends Server {
           },
         },
         {
-          name: 'registry_get_index',
+          name: 'get_index',
           description: 'Get the raw index.json from a registry',
           inputSchema: {
             type: 'object',
@@ -218,28 +221,28 @@ class GitHubRegistryMCP extends Server {
 
       try {
         switch (name) {
-          case 'github_read_file':
+          case 'read_file':
             return await this.githubReadFile(args as unknown as { owner: string; repo: string; path: string });
           
-          case 'github_write_file':
+          case 'write_file':
             return await this.githubWriteFile(args as unknown as GitHubFileParams);
           
-          case 'github_list_directory':
+          case 'list_directory':
             return await this.githubListDirectory(args as unknown as { owner: string; repo: string; path?: string });
           
-          case 'registry_init':
+          case 'init':
             return await this.registryInit(args as unknown as InitParams);
           
-          case 'registry_save':
+          case 'save':
             return await this.registrySave(args as unknown as SaveItemParams);
           
-          case 'registry_search':
+          case 'search':
             return await this.registrySearch(args as unknown as SearchParams);
           
-          case 'registry_list':
+          case 'list':
             return await this.registryList(args as unknown as ListParams & { groupBy?: 'none' | 'path' | 'tags' });
           
-          case 'registry_get_index':
+          case 'get_index':
             return await this.registryGetIndex(args as unknown as { type: RegistryType });
           
           case 'dynamic_executor':
@@ -535,6 +538,145 @@ class GitHubRegistryMCP extends Server {
     };
   }
 
+  private async processWebhookPush(payload: WebhookPushPayload): Promise<void> {
+    const { commits, repository } = payload;
+    const repoName = repository.name;
+    
+    const registryType = this.getRegistryTypeFromRepo(repoName);
+    if (!registryType) {
+      console.log(`Webhook: Repo ${repoName} not a registry, skipping`);
+      return;
+    }
+
+    const changes: IndexChange[] = [];
+    
+    for (const commit of commits) {
+      const allFiles = [...commit.added, ...commit.modified, ...commit.removed];
+      const mdFiles = allFiles.filter(f => f.endsWith('.md'));
+      
+      for (const file of mdFiles) {
+        if (commit.added.includes(file) || commit.modified.includes(file)) {
+          changes.push({ type: commit.added.includes(file) ? 'add' : 'update', path: file });
+        } else if (commit.removed.includes(file)) {
+          changes.push({ type: 'remove', path: file });
+        }
+      }
+    }
+
+    if (changes.length === 0) {
+      console.log(`Webhook: No .md files changed in ${repoName}`);
+      return;
+    }
+
+    console.log(`Webhook: Processing ${changes.length} changes in ${repoName}`);
+    await this.updateIndexFromChanges(registryType, changes);
+  }
+
+  private getRegistryTypeFromRepo(repoName: string): RegistryType | null {
+    for (const [type, repo] of Object.entries(REPOS)) {
+      if (repo === repoName) return type as RegistryType;
+    }
+    return null;
+  }
+
+  private async updateIndexFromChanges(type: RegistryType, changes: IndexChange[]): Promise<void> {
+    const repo = REPOS[type];
+    const now = new Date().toISOString();
+    
+    let index: RegistryIndex;
+    try {
+      index = await this.getIndexInternal(type);
+    } catch (error: any) {
+      if (error.status === 404) {
+        index = { type, items: [], version: '1.0.0', lastUpdated: now };
+      } else {
+        throw error;
+      }
+    }
+
+    for (const change of changes) {
+      if (change.type === 'remove') {
+        index.items = index.items.filter(item => item.path !== change.path);
+      } else {
+        const existingIndex = index.items.findIndex(item => item.path === change.path);
+        
+        let content = '';
+        if (change.type === 'update' || existingIndex === -1) {
+          try {
+            const fileResult = await this.githubReadFile({
+              owner: OWNER,
+              repo,
+              path: change.path,
+            });
+            content = fileResult.content[0].text;
+          } catch (error: any) {
+            console.error(`Error reading ${change.path}:`, error.message);
+            continue;
+          }
+        }
+
+        const fileName = change.path.split('/').pop()?.replace('.md', '') || '';
+        const pathParts = change.path.replace('.md', '').split('/');
+        pathParts.pop();
+        const category = pathParts.join('/');
+
+        const item: RegistryItem = {
+          name: fileName,
+          path: change.path,
+          tags: this.extractTags(content),
+          description: this.extractDescription(content),
+          createdAt: existingIndex >= 0 ? index.items[existingIndex].createdAt : now,
+          updatedAt: now,
+        };
+
+        if (existingIndex >= 0) {
+          index.items[existingIndex] = item;
+        } else {
+          index.items.push(item);
+        }
+      }
+    }
+
+    index.lastUpdated = now;
+
+    await this.githubWriteFile({
+      owner: OWNER,
+      repo,
+      path: 'index.json',
+      content: JSON.stringify(index, null, 2),
+      message: `chore(${type}): sync index from webhook`,
+    });
+
+    console.log(`Webhook: Updated ${type} index with ${changes.length} changes`);
+  }
+
+  private extractTags(content: string): string[] {
+    const tagsMatch = content.match(/tags?\s*[:=]\s*\[([^\]]+)\]/i);
+    if (tagsMatch) {
+      return tagsMatch[1].split(',').map(t => t.trim().replace(/["']/g, ''));
+    }
+    
+    const yamlTagsMatch = content.match(/^---\s*[\r\n]+tags:\s*\n((?:\s*-\s*.+\n?)+)/m);
+    if (yamlTagsMatch) {
+      return yamlTagsMatch[1].split('\n').map(t => t.replace(/^-\s*/, '').trim()).filter(Boolean);
+    }
+    
+    return [];
+  }
+
+  private validateWebhookSignature(payload: string, signature: string | undefined): boolean {
+    const secret = process.env.GITHUB_WEBHOOK_SECRET;
+    if (!secret || !signature) {
+      console.log('Webhook: No secret configured or no signature, allowing');
+      return true;
+    }
+    
+    const hmac = crypto.createHmac('sha256', secret);
+    const digest = 'sha256=' + hmac.update(payload).digest('hex');
+    
+    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature));
+  }
+
   private async getIndexInternal(type: RegistryType): Promise<RegistryIndex> {
     try {
       const response = await octokit.repos.getContent({
@@ -737,6 +879,34 @@ async function startServer() {
       }
       
       res.status(GITHUB_TOKEN ? 200 : 503).json(health);
+    });
+
+    app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+      try {
+        const signature = req.headers['x-hub-signature-256'] as string | undefined;
+        const payloadString = req.body.toString();
+        
+        const serverInstance = server as unknown as { validateWebhookSignature: (payload: string, signature: string | undefined) => boolean; processWebhookPush: (payload: WebhookPushPayload) => Promise<void> };
+        
+        if (!serverInstance.validateWebhookSignature(payloadString, signature)) {
+          console.error('Webhook: Invalid signature');
+          return res.status(401).send('Invalid signature');
+        }
+
+        const payload = JSON.parse(payloadString) as WebhookPushPayload;
+        
+        if (payload.ref?.startsWith('refs/heads/')) {
+          const branch = payload.ref.replace('refs/heads/', '');
+          console.log(`Webhook: Received push to ${branch}`);
+          
+          await serverInstance.processWebhookPush(payload);
+        }
+        
+        res.status(200).send('OK');
+      } catch (error) {
+        console.error('Webhook error:', error);
+        res.status(500).send('Internal error');
+      }
     });
 
     app.listen(PORT, '0.0.0.0', () => {
