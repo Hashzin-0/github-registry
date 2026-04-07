@@ -23,6 +23,7 @@ import {
   DynamicExecutorParams,
   WebhookPushPayload,
   IndexChange,
+  SkillUsageLogEvent,
 } from './types.js';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -36,6 +37,24 @@ if (!GITHUB_TOKEN) {
 
 const octokit = new Octokit({
   auth: GITHUB_TOKEN,
+});
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+
+const skillUsageLogSchema = z.object({
+  event_id: z.string().min(1),
+  run_id: z.string().min(1),
+  session_id: z.string().optional(),
+  task: z.string().min(1),
+  task_hash: z.string().optional(),
+  skill_name: z.string().min(1),
+  skill_path: z.string().optional(),
+  skill_type: z.enum(['skill', 'agent', 'mcp', 'all']).optional(),
+  status: z.enum(['success', 'error', 'timeout', 'partial']),
+  error: z.string().optional(),
+  latency_ms: z.number().int().nonnegative().optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 class GitHubRegistryMCP extends Server {
@@ -906,6 +925,88 @@ async function startServer() {
       } catch (error) {
         console.error('Webhook error:', error);
         res.status(500).send('Internal error');
+      }
+    });
+
+    app.post('/logs/skill-usage', async (req, res) => {
+      try {
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+          return res.status(503).json({
+            success: false,
+            message: 'Logging unavailable: SUPABASE_URL or SUPABASE_ANON_KEY not configured',
+          });
+        }
+
+        const expectedApiKey = process.env.LOG_API_KEY;
+        if (expectedApiKey) {
+          const providedApiKey = req.headers['x-log-api-key'];
+          if (!providedApiKey || providedApiKey !== expectedApiKey) {
+            return res.status(401).json({
+              success: false,
+              message: 'Unauthorized log ingestion request',
+            });
+          }
+        }
+
+        const parsed = skillUsageLogSchema.safeParse(req.body);
+        if (!parsed.success) {
+          return res.status(400).json({
+            success: false,
+            message: `Invalid payload: ${parsed.error.issues.map(issue => issue.message).join('; ')}`,
+          });
+        }
+
+        const event: SkillUsageLogEvent = parsed.data;
+        const insertResponse = await fetch(`${SUPABASE_URL}/rest/v1/skill_usage_logs`, {
+          method: 'POST',
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            'content-type': 'application/json',
+            prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            event_id: event.event_id,
+            run_id: event.run_id,
+            session_id: event.session_id,
+            task: event.task,
+            task_hash: event.task_hash,
+            skill_name: event.skill_name,
+            skill_path: event.skill_path,
+            skill_type: event.skill_type,
+            status: event.status,
+            error: event.error,
+            latency_ms: event.latency_ms,
+            metadata: event.metadata ?? {},
+          }),
+        });
+
+        if (!insertResponse.ok) {
+          const errorBody = await insertResponse.text();
+          if (insertResponse.status === 409 || errorBody.includes('23505')) {
+            return res.status(200).json({
+              success: true,
+              message: 'Duplicate event ignored (idempotent)',
+              event_id: event.event_id,
+            });
+          }
+
+          return res.status(500).json({
+            success: false,
+            message: `Failed to persist log: ${errorBody || insertResponse.statusText}`,
+          });
+        }
+
+        return res.status(202).json({
+          success: true,
+          message: 'Log ingested successfully',
+          event_id: event.event_id,
+        });
+      } catch (error) {
+        return res.status(500).json({
+          success: false,
+          message: `Unexpected logging error: ${error instanceof Error ? error.message : String(error)}`,
+        });
       }
     });
 
