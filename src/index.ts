@@ -1165,6 +1165,17 @@ async function startServer() {
       }
     });
 
+    app.get('/mcp', async (req, res) => {
+      try {
+        await transport.handleRequest(req, res);
+      } catch (error) {
+        console.error('Error handling MCP SSE request:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     
     app.get('/health', (req, res) => {
