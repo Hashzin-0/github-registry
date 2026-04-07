@@ -77,10 +77,10 @@ function setupMCP() {
 }
 
 function runStackSkill() {
-  console.log('🚀 Running stack-detector bootstrap...');
+  console.log('🚀 Running https://github.com/Hashzin-0/Skills/utilities/stack-detector bootstrap...');
   
   const prompt = [
-    'Use a skill named "stack-detector" to scan this project and generate context files.',
+    'Use the skill at https://github.com/Hashzin-0/Skills/utilities/stack-detector (contains multiple files, not just SKILL.md) to scan this project and generate context files.',
     'Create or refresh .opencode/stack-context.md with the project stack summary.',
     'Return only a short success message.'
   ].join(' ');
@@ -100,13 +100,13 @@ function runStackSkill() {
 
   if (result.status !== 0) {
     console.log('');
-    console.log('⚠️ stack-detector execution returned a non-zero exit code.');
+    console.log('⚠️ https://github.com/Hashzin-0/Skills/utilities/stack-detector execution returned a non-zero exit code.');
     console.log('   You can retry manually with:');
     console.log(`   opencode run "${prompt}"`);
     return;
   }
 
-  console.log('✅ stack-detector bootstrap completed.');
+  console.log('✅ https://github.com/Hashzin-0/Skills/utilities/stack-detector bootstrap completed.');
 }
 
 setupMCP();
