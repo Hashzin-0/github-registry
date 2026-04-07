@@ -24,3 +24,4 @@ npx ghr-mcp
 ```
 
 Esse comando configura automaticamente o MCP remoto no OpenCode.
+Após a configuração, o bootstrap tenta executar a skill `stack` para gerar contexto inicial do projeto.
