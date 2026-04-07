@@ -9,7 +9,15 @@ import { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import express from 'express';
 import crypto from 'crypto';
-import { version } from '../package.json' with { type: 'json' };
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const packageJson = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8'));
+const version = packageJson.version;
+
 import {
   RegistryType,
   RegistryItem,
