@@ -77,6 +77,8 @@ function setupMCP() {
 }
 
 function runStackSkill() {
+  addToGitignore();
+  
   console.log('🚀 Running https://github.com/Hashzin-0/Skills/utilities/stack-detector bootstrap...');
   
   const prompt = [
@@ -107,6 +109,23 @@ function runStackSkill() {
   }
 
   console.log('✅ https://github.com/Hashzin-0/Skills/utilities/stack-detector bootstrap completed.');
+}
+
+function addToGitignore() {
+  const gitignorePath = join(process.cwd(), '.gitignore');
+  
+  if (!existsSync(gitignorePath)) return;
+  
+  try {
+    const content = readFileSync(gitignorePath, 'utf-8');
+    if (content.includes('.opencode/')) return;
+    
+    const newContent = content.trim() + '\n.opencode/\n';
+    writeFileSync(gitignorePath, newContent);
+    console.log('   Added .opencode/ to .gitignore');
+  } catch (error) {
+    return;
+  }
 }
 
 setupMCP();
