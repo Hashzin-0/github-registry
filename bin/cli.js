@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { spawnSync } from 'child_process';
 
 const MCP_URL = 'https://github-registry.onrender.com/mcp';
 const CONFIG_DIR = join(homedir(), '.config', 'opencode');
@@ -52,6 +53,7 @@ function setupMCP() {
     if (config.mcp['github-registry'].url === MCP_URL) {
       console.log('✅ GitHub Registry MCP already configured!');
       console.log(`   URL: ${MCP_URL}`);
+      runStackSkill();
       return;
     }
   }
@@ -69,6 +71,42 @@ function setupMCP() {
   console.log(`   Config file: ${CONFIG_FILE}`);
   console.log('');
   console.log('Restart OpenCode to use the MCP server.');
+  console.log('');
+  
+  runStackSkill();
+}
+
+function runStackSkill() {
+  console.log('🚀 Running stack-detector bootstrap...');
+  
+  const prompt = [
+    'Use a skill named "stack-detector" to scan this project and generate context files.',
+    'Create or refresh .opencode/stack-context.md with the project stack summary.',
+    'Return only a short success message.'
+  ].join(' ');
+
+  const result = spawnSync('opencode', ['run', prompt], {
+    stdio: 'inherit',
+  });
+
+  if (result.error) {
+    console.log('');
+    console.log('⚠️ Could not execute stack skill automatically.');
+    console.log('   Make sure OpenCode CLI is installed and available in PATH.');
+    console.log('   You can run it manually with:');
+    console.log(`   opencode run "${prompt}"`);
+    return;
+  }
+
+  if (result.status !== 0) {
+    console.log('');
+    console.log('⚠️ stack-detector execution returned a non-zero exit code.');
+    console.log('   You can retry manually with:');
+    console.log(`   opencode run "${prompt}"`);
+    return;
+  }
+
+  console.log('✅ stack-detector bootstrap completed.');
 }
 
 setupMCP();

@@ -21,8 +21,11 @@ import {
   REPOS,
   OWNER,
   DynamicExecutorParams,
+  ResourceCapabilities,
   WebhookPushPayload,
   IndexChange,
+  SkillUsageLogEvent,
+  ImproverParams,
 } from './types.js';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -36,6 +39,24 @@ if (!GITHUB_TOKEN) {
 
 const octokit = new Octokit({
   auth: GITHUB_TOKEN,
+});
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+
+const skillUsageLogSchema = z.object({
+  event_id: z.string().min(1),
+  run_id: z.string().min(1),
+  session_id: z.string().optional(),
+  task: z.string().min(1),
+  task_hash: z.string().optional(),
+  skill_name: z.string().min(1),
+  skill_path: z.string().optional(),
+  skill_type: z.enum(['skill', 'agent', 'mcp', 'all']).optional(),
+  status: z.enum(['success', 'error', 'timeout', 'partial']),
+  error: z.string().optional(),
+  latency_ms: z.number().int().nonnegative().optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 class GitHubRegistryMCP extends Server {
@@ -213,6 +234,76 @@ class GitHubRegistryMCP extends Server {
             required: ['task']
           },
         },
+        {
+          name: 'skill_improver',
+          description: 'Analyze skill usage logs and return quality insights/suggestions',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              dateFrom: { type: 'string', description: 'ISO date-time filter start' },
+              dateTo: { type: 'string', description: 'ISO date-time filter end' },
+              minSamples: { type: 'number', default: 5 },
+              includeSuggestions: { type: 'boolean', default: true },
+            },
+          },
+        },
+        {
+          name: 'agent_improver',
+          description: 'Analyze agent usage logs and return quality insights/suggestions',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              dateFrom: { type: 'string', description: 'ISO date-time filter start' },
+              dateTo: { type: 'string', description: 'ISO date-time filter end' },
+              minSamples: { type: 'number', default: 5 },
+              includeSuggestions: { type: 'boolean', default: true },
+            },
+          },
+        },
+        {
+          name: 'import_skill',
+          description: 'Import a specific skill by name from remote registry',
+          inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'import_skills',
+          description: 'Import all skills from remote registry',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'import_agent',
+          description: 'Import a specific agent by name from remote registry',
+          inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'import_agents',
+          description: 'Import all agents from remote registry',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'import_mcp',
+          description: 'Import a specific MCP item by name from remote registry',
+          inputSchema: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'import_mcps',
+          description: 'Import all MCP items from remote registry',
+          inputSchema: { type: 'object', properties: {} },
+        },
       ],
     }));
 
@@ -247,6 +338,30 @@ class GitHubRegistryMCP extends Server {
           
           case 'dynamic_executor':
             return await this.dynamicExecutor(args as unknown as DynamicExecutorParams);
+
+          case 'skill_improver':
+            return await this.improverCore('skill', args as unknown as ImproverParams);
+
+          case 'agent_improver':
+            return await this.improverCore('agent', args as unknown as ImproverParams);
+
+          case 'import_skill':
+            return await this.importCore('skill', 'one', args as unknown as { name: string });
+
+          case 'import_skills':
+            return await this.importCore('skill', 'all');
+
+          case 'import_agent':
+            return await this.importCore('agent', 'one', args as unknown as { name: string });
+
+          case 'import_agents':
+            return await this.importCore('agent', 'all');
+
+          case 'import_mcp':
+            return await this.importCore('mcp', 'one', args as unknown as { name: string });
+
+          case 'import_mcps':
+            return await this.importCore('mcp', 'all');
           
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -735,6 +850,12 @@ class GitHubRegistryMCP extends Server {
             description: bestMatch.description,
             tags: bestMatch.tags || [],
             content: mainContent.content[0].text,
+            capabilities: this.inferCapabilities({
+              type: t,
+              path: bestMatch.path,
+              tags: bestMatch.tags || [],
+              description: bestMatch.description,
+            }),
             matchReason
           };
           
@@ -833,6 +954,178 @@ class GitHubRegistryMCP extends Server {
       ? resources
       : null;
   }
+
+  private inferCapabilities(item: { type: 'skill' | 'agent' | 'mcp'; tags?: string[]; path?: string; description?: string }): ResourceCapabilities {
+    const text = `${item.description || ''} ${(item.tags || []).join(' ')} ${item.path || ''}`.toLowerCase();
+    const domains = ['backend', 'frontend', 'security', 'devops', 'data', 'ai']
+      .filter(domain => text.includes(domain));
+    const operations = ['analyze', 'generate', 'refactor', 'test', 'deploy', 'debug']
+      .filter(op => text.includes(op));
+
+    const riskLevel: ResourceCapabilities['riskLevel'] = /deploy|prod|security|auth/.test(text)
+      ? 'high'
+      : /write|edit|modify/.test(text)
+        ? 'medium'
+        : 'low';
+
+    return {
+      domains: domains.length > 0 ? domains : ['general'],
+      operations: operations.length > 0 ? operations : ['analyze'],
+      requiresStackContext: text.includes('stack') || text.includes('context'),
+      riskLevel,
+      outputs: ['text/markdown'],
+    };
+  }
+
+  private async improverCore(domain: 'skill' | 'agent', args: ImproverParams = {}) {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY are required for improver tools');
+    }
+
+    const {
+      query = '',
+      dateFrom,
+      dateTo,
+      minSamples = 5,
+      includeSuggestions = true,
+    } = args;
+
+    const params = new URLSearchParams();
+    params.set('select', 'skill_name,skill_type,status,error,latency_ms,created_at');
+    params.set('order', 'created_at.desc');
+    params.set('limit', '500');
+    params.set('skill_type', `eq.${domain}`);
+    if (query) params.set('skill_name', `ilike.*${query}*`);
+    if (dateFrom) params.set('created_at', `gte.${dateFrom}`);
+    if (dateTo) params.set('created_at', `lte.${dateTo}`);
+
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/skill_usage_logs?${params.toString()}`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Improver query failed: ${body || response.statusText}`);
+    }
+
+    const rows = await response.json() as Array<{
+      skill_name: string;
+      skill_type: string;
+      status: string;
+      error?: string;
+      latency_ms?: number;
+      created_at: string;
+    }>;
+
+    const grouped = new Map<string, typeof rows>();
+    for (const row of rows) {
+      if (!grouped.has(row.skill_name)) grouped.set(row.skill_name, []);
+      grouped.get(row.skill_name)!.push(row);
+    }
+
+    const insights = Array.from(grouped.entries()).map(([name, items]) => {
+      const total = items.length;
+      const success = items.filter(i => i.status === 'success').length;
+      const errors = items.filter(i => i.status !== 'success');
+      const avgLatency = items.filter(i => typeof i.latency_ms === 'number')
+        .reduce((acc, item) => acc + (item.latency_ms || 0), 0) / Math.max(1, items.filter(i => typeof i.latency_ms === 'number').length);
+      const topErrors = Object.entries(
+        errors.reduce((acc, item) => {
+          const key = item.error || item.status;
+          acc[key] = (acc[key] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>)
+      ).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([error, count]) => ({ error, count }));
+
+      const suggestions: string[] = [];
+      if (includeSuggestions && total >= minSamples) {
+        const successRate = success / total;
+        if (successRate < 0.7) suggestions.push('Review prerequisites and add clearer execution checklist.');
+        if (avgLatency > 8000) suggestions.push('Optimize heavy steps and split long-running operations.');
+        if (topErrors.length > 0) suggestions.push(`Add guidance for frequent failures: ${topErrors[0].error}.`);
+      }
+
+      return {
+        name,
+        domain,
+        samples: total,
+        successRate: Number((success / Math.max(1, total)).toFixed(3)),
+        avgLatencyMs: Number(avgLatency.toFixed(2)),
+        topErrors,
+        suggestions,
+      };
+    }).sort((a, b) => b.samples - a.samples);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          domain,
+          filters: { query, dateFrom, dateTo, minSamples, includeSuggestions },
+          totalRows: rows.length,
+          insights,
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async importCore(kind: 'skill' | 'agent' | 'mcp', mode: 'one' | 'all', args?: { name: string }) {
+    const registryType = kind === 'skill' ? 'skills' : kind === 'agent' ? 'agents' : 'mcp';
+    const index = await this.getIndexInternal(registryType);
+    const sourceRepo = REPOS[registryType];
+
+    const selectedItems = mode === 'all'
+      ? index.items
+      : index.items.filter(item => item.name.toLowerCase() === (args?.name || '').toLowerCase());
+
+    if (selectedItems.length === 0) {
+      throw new Error(`No ${kind} found for ${mode === 'one' ? args?.name : 'all'} request`);
+    }
+
+    const imports = [];
+    for (const item of selectedItems) {
+      const rawUrl = `https://raw.githubusercontent.com/${OWNER}/${sourceRepo}/main/${item.path}`;
+      const capabilities = this.inferCapabilities({
+        type: kind,
+        path: item.path,
+        tags: item.tags,
+        description: item.description,
+      });
+
+      let targetPath = '';
+      if (kind === 'skill') {
+        targetPath = `.opencode/skills/${item.path.replace(/\/SKILL\.md$/i, '').replace(/\.md$/i, '')}/SKILL.md`;
+      } else if (kind === 'agent') {
+        targetPath = `.opencode/agents/${item.name}.md`;
+      } else {
+        targetPath = `.opencode/mcps/${item.name}.md`;
+      }
+
+      imports.push({
+        name: item.name,
+        sourcePath: item.path,
+        rawUrl,
+        targetPath,
+        capabilities,
+      });
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          kind,
+          mode,
+          count: imports.length,
+          imports,
+          message: 'Import plan ready. Fetch rawUrl and write each item to targetPath in your OpenCode workspace.',
+        }, null, 2),
+      }],
+    };
+  }
 }
 
 const server = new GitHubRegistryMCP();
@@ -906,6 +1199,88 @@ async function startServer() {
       } catch (error) {
         console.error('Webhook error:', error);
         res.status(500).send('Internal error');
+      }
+    });
+
+    app.post('/logs/skill-usage', async (req, res) => {
+      try {
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+          return res.status(503).json({
+            success: false,
+            message: 'Logging unavailable: SUPABASE_URL or SUPABASE_ANON_KEY not configured',
+          });
+        }
+
+        const expectedApiKey = process.env.LOG_API_KEY;
+        if (expectedApiKey) {
+          const providedApiKey = req.headers['x-log-api-key'];
+          if (!providedApiKey || providedApiKey !== expectedApiKey) {
+            return res.status(401).json({
+              success: false,
+              message: 'Unauthorized log ingestion request',
+            });
+          }
+        }
+
+        const parsed = skillUsageLogSchema.safeParse(req.body);
+        if (!parsed.success) {
+          return res.status(400).json({
+            success: false,
+            message: `Invalid payload: ${parsed.error.issues.map(issue => issue.message).join('; ')}`,
+          });
+        }
+
+        const event: SkillUsageLogEvent = parsed.data;
+        const insertResponse = await fetch(`${SUPABASE_URL}/rest/v1/skill_usage_logs`, {
+          method: 'POST',
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            'content-type': 'application/json',
+            prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            event_id: event.event_id,
+            run_id: event.run_id,
+            session_id: event.session_id,
+            task: event.task,
+            task_hash: event.task_hash,
+            skill_name: event.skill_name,
+            skill_path: event.skill_path,
+            skill_type: event.skill_type,
+            status: event.status,
+            error: event.error,
+            latency_ms: event.latency_ms,
+            metadata: event.metadata ?? {},
+          }),
+        });
+
+        if (!insertResponse.ok) {
+          const errorBody = await insertResponse.text();
+          if (insertResponse.status === 409 || errorBody.includes('23505')) {
+            return res.status(200).json({
+              success: true,
+              message: 'Duplicate event ignored (idempotent)',
+              event_id: event.event_id,
+            });
+          }
+
+          return res.status(500).json({
+            success: false,
+            message: `Failed to persist log: ${errorBody || insertResponse.statusText}`,
+          });
+        }
+
+        return res.status(202).json({
+          success: true,
+          message: 'Log ingested successfully',
+          event_id: event.event_id,
+        });
+      } catch (error) {
+        return res.status(500).json({
+          success: false,
+          message: `Unexpected logging error: ${error instanceof Error ? error.message : String(error)}`,
+        });
       }
     });
 

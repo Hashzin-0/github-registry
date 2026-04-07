@@ -60,6 +60,14 @@ export interface DynamicExecutorParams {
   includeResources?: boolean;
 }
 
+export interface ResourceCapabilities {
+  domains: string[];
+  operations: string[];
+  requiresStackContext: boolean;
+  riskLevel: 'low' | 'medium' | 'high';
+  outputs: string[];
+}
+
 export interface DynamicExecutorResultItem {
   type: 'skill' | 'agent' | 'mcp';
   name: string;
@@ -72,6 +80,7 @@ export interface DynamicExecutorResultItem {
     scripts: { name: string; content: string }[];
     agents: { name: string; content: string }[];
   };
+  capabilities?: ResourceCapabilities;
   matchReason: string;
 }
 
@@ -107,4 +116,35 @@ export interface IndexChange {
   type: IndexChangeType;
   path: string;
   content?: string;
+}
+
+export type SkillUsageStatus = 'success' | 'error' | 'timeout' | 'partial';
+
+export interface SkillUsageLogEvent {
+  event_id: string;
+  run_id: string;
+  session_id?: string;
+  task: string;
+  task_hash?: string;
+  skill_name: string;
+  skill_path?: string;
+  skill_type?: 'skill' | 'agent' | 'mcp' | 'all';
+  status: SkillUsageStatus;
+  error?: string;
+  latency_ms?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface LogIngestResponse {
+  success: boolean;
+  message: string;
+  event_id?: string;
+}
+
+export interface ImproverParams {
+  query?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  minSamples?: number;
+  includeSuggestions?: boolean;
 }
