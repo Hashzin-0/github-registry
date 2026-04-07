@@ -205,11 +205,17 @@ function runStackSkill() {
   ].join(' ');
 
   const result = spawnSync('opencode', ['run', prompt], {
-    stdio: 'inherit',
+    stdio: ['pipe', 'pipe', 'pipe'],
     cwd: process.cwd(),
+    encoding: 'utf-8',
+    maxBuffer: 10 * 1024 * 1024,
   });
 
-  return result;
+  return {
+    code: result.status,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
 }
 
 function setupMCP() {
@@ -258,9 +264,19 @@ function setupMCP() {
     printStage5(0);
     printSeparator();
     
-    const skillResult = runStackSkill();
+    const result = runStackSkill();
     
-    if (!skillResult.error && skillResult.code === 0) {
+    if (result.code !== 0 && result.stderr) {
+      const errorLines = result.stderr.split('\n').filter(l => l.includes('Error') || l.includes('error') || l.includes('✗'));
+      if (errorLines.length > 0) {
+        console.log('║  ⚠️ Erro:                                               ║');
+        const errorMsg = errorLines[0].trim().substring(0, BOX_WIDTH - 6);
+        printLine(`    ${errorMsg}`);
+        printSeparator();
+      }
+    }
+    
+    if (result.code === 0 || result.code === null) {
       const contextPath = join(process.cwd(), '.opencode', 'stack-context.md');
       if (!existsSync(contextPath)) {
         results.contextCreated = true;
