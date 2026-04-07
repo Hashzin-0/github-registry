@@ -3,8 +3,8 @@ dist/
 build/
 *.log
 .env
-.env.example
-.env.local
+.env.example/
+.env.local/
 .DS_Store
 *.tgz
 coverage/
