@@ -1,6 +1,6 @@
 {
   "name": "ghr-mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "MCP Server for GitHub Registry - Manage skills, agents and MCPs in GitHub repos",
   "main": "dist/index.js",
   "bin": {
