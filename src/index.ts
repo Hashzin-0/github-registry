@@ -9,7 +9,7 @@ import { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import express from 'express';
 import crypto from 'crypto';
-import { version } from '../package.json';
+import { version } from '../package.json' with { type: 'json' };
 import {
   RegistryType,
   RegistryItem,
