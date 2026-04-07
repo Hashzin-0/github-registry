@@ -9,6 +9,7 @@ import { Octokit } from '@octokit/rest';
 import { z } from 'zod';
 import express from 'express';
 import crypto from 'crypto';
+import { version } from '../package.json';
 import {
   RegistryType,
   RegistryItem,
@@ -64,7 +65,7 @@ class GitHubRegistryMCP extends Server {
     super(
       {
         name: 'github-registry-mcp',
-        version: '1.0.0',
+        version,
       },
       {
         capabilities: {
@@ -492,7 +493,7 @@ class GitHubRegistryMCP extends Server {
     const initialIndex: RegistryIndex = {
       type,
       items: [],
-      version: '1.0.0',
+      version,
       lastUpdated: new Date().toISOString(),
     };
 
@@ -703,7 +704,7 @@ class GitHubRegistryMCP extends Server {
       index = await this.getIndexInternal(type);
     } catch (error: any) {
       if (error.status === 404) {
-        index = { type, items: [], version: '1.0.0', lastUpdated: now };
+        index = { type, items: [], version, lastUpdated: now };
       } else {
         throw error;
       }
