@@ -1148,14 +1148,39 @@ async function startServer() {
 
     const PORT = parseInt(process.env.PORT || '3000', 10);
 
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
-    });
-
-    await server.connect(transport);
+    const transports = new Map<string, StreamableHTTPServerTransport>();
 
     app.post('/mcp', async (req, res) => {
       try {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        let transport: StreamableHTTPServerTransport;
+
+        if (sessionId && transports.has(sessionId)) {
+          transport = transports.get(sessionId)!;
+        } else if (!sessionId) {
+          transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => crypto.randomUUID(),
+            onsessioninitialized: (sid) => {
+              transports.set(sid, transport);
+            },
+          });
+
+          transport.onclose = () => {
+            if (transport.sessionId) {
+              transports.delete(transport.sessionId);
+            }
+          };
+
+          await server.connect(transport);
+        } else {
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'Invalid session ID' },
+            id: null,
+          });
+          return;
+        }
+
         await transport.handleRequest(req, res, req.body);
       } catch (error) {
         console.error('Error handling MCP request:', error);
@@ -1167,9 +1192,37 @@ async function startServer() {
 
     app.get('/mcp', async (req, res) => {
       try {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        if (!sessionId || !transports.has(sessionId)) {
+          res.status(405).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'No active session' },
+            id: null,
+          });
+          return;
+        }
+
+        const transport = transports.get(sessionId)!;
         await transport.handleRequest(req, res);
       } catch (error) {
         console.error('Error handling MCP SSE request:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
+    });
+
+    app.delete('/mcp', async (req, res) => {
+      try {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        if (sessionId && transports.has(sessionId)) {
+          const transport = transports.get(sessionId)!;
+          transport.close();
+          transports.delete(sessionId);
+        }
+        res.status(405).send();
+      } catch (error) {
+        console.error('Error handling MCP DELETE request:', error);
         if (!res.headersSent) {
           res.status(500).json({ error: 'Internal server error' });
         }
